@@ -9,7 +9,10 @@ class PredictionModule(tf.keras.layers.Layer):
     self.num_class = num_class
     self.num_mask = num_mask
 
-    self.Conv = tf.keras.layers.Conv2D(out_channels, (3, 3), 1, padding="same",
+    self.Conv1 = tf.keras.layers.Conv2D(out_channels, (3, 3), 1, padding="same",
+                                        kernel_initializer=tf.keras.initializers.glorot_uniform(),
+                                        activation="relu")
+    self.Conv2 = tf.keras.layers.Conv2D(out_channels, (3, 3), 1, padding="same",
                                         kernel_initializer=tf.keras.initializers.glorot_uniform(),
                                         activation="relu")
 
@@ -24,7 +27,8 @@ class PredictionModule(tf.keras.layers.Layer):
                                             kernel_initializer=tf.keras.initializers.glorot_uniform())
 
   def call(self, p):
-    p = self.Conv(p)
+    p = self.Conv1(p)
+    p = self.Conv2(p)
 
     pred_class = self.classConv(p)
     pred_box = self.boxConv(p)
