@@ -4,52 +4,49 @@ from utils import utils
 
 
 class YOLACTLoss(object):
-
-  def __init__(self, loss_weight_cls=1,
-               loss_weight_box=1.5,
-               loss_weight_mask=6.125,
-               loss_seg=1,
+  def __init__(self, num_classes,
+               classification_loss_weight=1,
+               box_prediction_loss_weight=1.5,
+               mask_loss_weight=6.125,
+               segmentation_loss_weight=1,
                neg_pos_ratio=3,
                max_masks_for_train=100):
-    self._loss_weight_cls = loss_weight_cls
-    self._loss_weight_box = loss_weight_box
-    self._loss_weight_mask = loss_weight_mask
-    self._loss_weight_seg = loss_seg
+    self._num_classes = num_classes
+    self._classification_loss_weight = classification_loss_weight
+    self._box_prediction_loss_weight = box_prediction_loss_weight
+    self._mask_loss_weight = mask_loss_weight
+    self._segmentation_loss_weight = segmentation_loss_weight
     self._neg_pos_ratio = neg_pos_ratio
     self._max_masks_for_train = max_masks_for_train
 
-  def __call__(self, pred, label, num_classes):
-    """
-      :param num_classes:
-      :param anchors:
-      :param label: labels dict from dataset
-      :param pred:
-      :return:
-    """
-    # all prediction component
-    pred_cls = pred['pred_cls']
-    pred_offset = pred['pred_offset']
-    pred_mask_coef = pred['pred_mask_coef']
-    proto_out = pred['proto_out']
-    seg = pred['seg']
+  def __call__(self, y_true, y_pred):
+    # all prediction components
+    pred_cls = y_pred['pred_cls']
+    pred_offset = y_pred['pred_offset']
+    pred_mask_coef = y_pred['pred_mask_coef']
+    proto_out = y_pred['proto_out']
+    seg = y_pred['seg']
 
-    # all label component
-    cls_targets = label['cls_targets']
-    box_targets = label['box_targets']
-    positiveness = label['positiveness']
-    bbox_norm = label['bbox_for_norm']
-    masks = label['mask_target']
-    max_id_for_anchors = label['max_id_for_anchors']
-    classes = label['classes']
-    num_obj = label['num_obj']
+    # all label components
+    cls_targets = y_true['cls_targets']
+    box_targets = y_true['box_targets']
+    positiveness = y_true['positiveness']
+    bbox_norm = y_true['bbox_for_norm']
+    masks = y_true['mask_target']
+    max_id_for_anchors = y_true['max_id_for_anchors']
+    classes = y_true['classes']
+    num_obj = y_true['num_obj']
 
     # calculate num_pos
-    loc_loss = self._loss_location(pred_offset, box_targets, positiveness) * self._loss_weight_box
-    conf_loss = self._loss_class(pred_cls, cls_targets, num_classes, positiveness) * self._loss_weight_cls
-    mask_loss = self._loss_mask(proto_out, pred_mask_coef, bbox_norm, masks, positiveness, max_id_for_anchors,
-                                max_masks_for_train=100) * self._loss_weight_mask
-    seg_loss = self._loss_semantic_segmentation(seg, masks, classes, num_obj) * self._loss_weight_seg
-    total_loss = loc_loss + conf_loss + mask_loss + seg_loss
+    loc_loss = self._loss_location(pred_offset, box_targets, positiveness)
+    conf_loss = self._loss_class(pred_cls, cls_targets, positiveness)
+    mask_loss = self._loss_mask(proto_out, pred_mask_coef, bbox_norm, masks, positiveness, 
+                                max_id_for_anchors, self._max_masks_for_train)
+    seg_loss = self._loss_semantic_segmentation(seg, masks, classes, num_obj)
+    total_loss = (self._box_prediction_loss_weight * loc_loss +
+                  self._classification_loss_weight * conf_loss +
+                  self._mask_loss_weight * mask_loss +
+                  self._segmentation_loss_weight * seg_loss)
     return loc_loss, conf_loss, mask_loss, seg_loss, total_loss
 
   def _loss_location(self, pred_offset, gt_offset, positiveness):
@@ -64,12 +61,11 @@ class YOLACTLoss(object):
     num_pos = tf.shape(gt_offset)[0]
     smoothl1loss = tf.keras.losses.Huber(delta=1., reduction=tf.losses.Reduction.NONE)
     loss_loc = tf.reduce_sum(smoothl1loss(gt_offset, pred_offset)) / tf.cast(num_pos, tf.float32)
-
     return loss_loc
 
-  def _loss_class(self, pred_cls, gt_cls, num_cls, positiveness):
+  def _loss_class(self, pred_cls, gt_cls, positiveness):
     # reshape pred_cls from [batch, num_anchor, num_cls] => [batch * num_anchor, num_cls]
-    pred_cls = tf.reshape(pred_cls, [-1, num_cls])
+    pred_cls = tf.reshape(pred_cls, [-1, self._num_classes])
 
     # reshape gt_cls from [batch, num_anchor] => [batch * num_anchor, 1]
     gt_cls = tf.expand_dims(gt_cls, axis=-1)
@@ -85,7 +81,7 @@ class YOLACTLoss(object):
     pos_pred_cls = tf.gather(pred_cls, pos_indices[:, 0])
     pos_gt = tf.gather(gt_cls, pos_indices[:, 0])
 
-    # calculate the needed amount of  negative sample
+    # calculate the needed amount of negative sample
     num_pos = tf.shape(pos_gt)[0]
     num_neg_needed = num_pos * self._neg_pos_ratio
 
@@ -112,7 +108,7 @@ class YOLACTLoss(object):
     # concat positive and negtive data
     target_logits = tf.concat([pos_pred_cls, neg_pred_cls_for_loss], axis=0)
     target_labels = tf.cast(tf.concat([pos_gt, neg_gt_for_loss], axis=0), tf.int64)
-    target_labels = tf.one_hot(tf.squeeze(target_labels), depth=num_cls)
+    target_labels = tf.one_hot(tf.squeeze(target_labels), depth=self._num_classes)
 
     # loss
     loss_conf = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(target_labels, target_logits)) / tf.cast(
@@ -120,15 +116,15 @@ class YOLACTLoss(object):
 
     return loss_conf
 
-  def _loss_mask(self, proto_output, pred_mask_coef, gt_bbox_norm, gt_masks, positiveness,
-                  max_id_for_anchors, max_masks_for_train):
-    shape_proto = tf.shape(proto_output)
-    num_batch = shape_proto[0]
+  def _loss_mask(self, protonet_output, pred_mask_coef, gt_bbox_norm, gt_masks,
+                 positiveness, max_id_for_anchors, max_masks_for_train):
+    shape_proto = tf.shape(protonet_output)
+    batch_size = shape_proto[0]
     loss_mask = 0.
     total_pos = 0
-    for idx in tf.range(num_batch):
+    for idx in tf.range(batch_size):
       # extract randomly postive sample in pred_mask_coef, gt_cls, gt_offset according to positive_indices
-      proto = proto_output[idx]
+      proto = protonet_output[idx]
       mask_coef = pred_mask_coef[idx]
       mask_gt = gt_masks[idx]
       bbox_norm = gt_bbox_norm[idx]
@@ -137,13 +133,8 @@ class YOLACTLoss(object):
 
       pos_indices = tf.squeeze(tf.where(pos == 1))
       # tf.print("num_pos", tf.shape(pos_indices))
-      """
-      if tf.size(pos_indices) == 0:
-          tf.print("detect no positive")
-          continue
-      """
-      # Todo decrease the number pf positive to be 100
-      # [num_pos, k]
+
+      # TODO: Limit number of positive to be less than max_masks_for_train
       pos_mask_coef = tf.gather(mask_coef, pos_indices)
       pos_max_id = tf.gather(max_id, pos_indices)
       if tf.size(pos_indices) == 1:
@@ -151,7 +142,6 @@ class YOLACTLoss(object):
         pos_mask_coef = tf.expand_dims(pos_mask_coef, axis=0)
         pos_max_id = tf.expand_dims(pos_max_id, axis=0)
       total_pos += tf.size(pos_indices)
-      # [138, 138, num_pos]
       pred_mask = tf.linalg.matmul(proto, pos_mask_coef, transpose_a=False, transpose_b=True)
       pred_mask = tf.transpose(pred_mask, perm=(2, 0, 1))
 
