@@ -26,7 +26,7 @@ class PredictionModule(tf.keras.layers.Layer):
     self.maskConv = tf.keras.layers.Conv2D(self.num_mask * self.num_anchors, (3, 3), 1, padding="same",
                                             kernel_initializer=tf.keras.initializers.glorot_uniform())
 
-  def call(self, p):
+  def call(self, p, training=False):
     p = self.Conv1(p)
     p = self.Conv2(p)
 
@@ -35,9 +35,9 @@ class PredictionModule(tf.keras.layers.Layer):
     pred_mask = self.maskConv(p)
 
     # reshape the prediction head result for following loss calculation
-    pred_class = tf.reshape(pred_class, [pred_class.shape[0], -1, self.num_class])
-    pred_box = tf.reshape(pred_box, [pred_box.shape[0], -1, 4])
-    pred_mask = tf.reshape(pred_mask, [pred_mask.shape[0], -1, self.num_mask])
+    pred_class = tf.reshape(pred_class, [tf.shape(pred_class)[0], -1, self.num_class])
+    pred_box = tf.reshape(pred_box, [tf.shape(pred_box)[0], -1, 4])
+    pred_mask = tf.reshape(pred_mask, [tf.shape(pred_mask)[0], -1, self.num_mask])
 
     # add activation for conf and mask coef
     pred_mask = tf.keras.activations.tanh(pred_mask)
