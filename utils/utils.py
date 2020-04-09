@@ -49,7 +49,6 @@ def normalize_image(image,
   scale = tf.expand_dims(scale, axis=0)
   scale = tf.expand_dims(scale, axis=0)
   image /= scale
-  image *= 255
   return image
 
 
